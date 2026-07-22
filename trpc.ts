@@ -1,45 +1,42 @@
-import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "../../shared/const.js";
-import { initTRPC, TRPCError } from "@trpc/server";
+import { createTRPCReact } from "@trpc/react-query";
+import { httpBatchLink } from "@trpc/client";
 import superjson from "superjson";
-import type { TrpcContext } from "./context";
+import type { AppRouter } from "@/server/routers";
+import { getApiBaseUrl } from "@/constants/oauth";
+import * as Auth from "@/lib/_core/auth";
 
-const t = initTRPC.context<TrpcContext>().create({
-  transformer: superjson,
-});
+/**
+ * tRPC React client for type-safe API calls.
+ *
+ * IMPORTANT (tRPC v11): The `transformer` must be inside `httpBatchLink`,
+ * NOT at the root createClient level. This ensures client and server
+ * use the same serialization format (superjson).
+ */
+export const trpc = createTRPCReact<AppRouter>();
 
-export const router = t.router;
-export const publicProcedure = t.procedure;
-
-const requireUser = t.middleware(async (opts) => {
-  const { ctx, next } = opts;
-
-  if (!ctx.user) {
-    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
-  }
-
-  return next({
-    ctx: {
-      ...ctx,
-      user: ctx.user,
-    },
+/**
+ * Creates the tRPC client with proper configuration.
+ * Call this once in your app's root layout.
+ */
+export function createTRPCClient() {
+  return trpc.createClient({
+    links: [
+      httpBatchLink({
+        url: `${getApiBaseUrl()}/api/trpc`,
+        // tRPC v11: transformer MUST be inside httpBatchLink, not at root
+        transformer: superjson,
+        async headers() {
+          const token = await Auth.getSessionToken();
+          return token ? { Authorization: `Bearer ${token}` } : {};
+        },
+        // Custom fetch to include credentials for cookie-based auth
+        fetch(url, options) {
+          return fetch(url, {
+            ...options,
+            credentials: "include",
+          });
+        },
+      }),
+    ],
   });
-});
-
-export const protectedProcedure = t.procedure.use(requireUser);
-
-export const adminProcedure = t.procedure.use(
-  t.middleware(async (opts) => {
-    const { ctx, next } = opts;
-
-    if (!ctx.user || ctx.user.role !== "admin") {
-      throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
-    }
-
-    return next({
-      ctx: {
-        ...ctx,
-        user: ctx.user,
-      },
-    });
-  }),
-);
+}
